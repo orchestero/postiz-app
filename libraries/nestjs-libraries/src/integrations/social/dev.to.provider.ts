@@ -110,38 +110,90 @@ export class DevToProvider extends SocialAbstract implements SocialProvider {
 
   @Tool({ description: 'Organization list', dataSchema: [] })
   async organizations(token: string) {
-    const orgs = await (
-      await fetch('https://dev.to/api/articles/me/all?per_page=1000', {
-        headers: {
-          'api-key': token,
-        },
-      })
-    ).json();
+    // The Forem API has no "organizations of the current user" endpoint, and
+    // upstream only looked at past articles, so a fresh organization could
+    // never be picked. Collect candidates from (1) past articles, (2) the
+    // "Organizations" card of the user's public profile page and (3) the
+    // optional DEVTO_ORGANIZATIONS env (comma separated usernames), then keep
+    // only organizations whose member list contains the current user.
+    const headers = { 'api-key': token };
+    const safeJson = async (url: string) => {
+      try {
+        const res = await fetch(url, { headers });
+        return res.ok ? await res.json() : null;
+      } catch (err) {
+        return null;
+      }
+    };
 
-    const allOrgs: string[] = [
-      ...new Set(
-        orgs
-          .flatMap((org: any) => org?.organization?.username)
-          .filter((f: string) => f)
-      ),
-    ] as string[];
-    const fullDetails = await Promise.all(
-      allOrgs.map(async (org: string) => {
-        return (
-          await fetch(`https://dev.to/api/organizations/${org}`, {
-            headers: {
-              'api-key': token,
-            },
+    const me = await safeJson('https://dev.to/api/users/me');
+    const candidates = new Set<string>();
+
+    const articles = await safeJson(
+      'https://dev.to/api/articles/me/all?per_page=1000'
+    );
+    if (Array.isArray(articles)) {
+      for (const article of articles) {
+        if (article?.organization?.username) {
+          candidates.add(article.organization.username);
+        }
+      }
+    }
+
+    if (me?.username) {
+      try {
+        const html = await (
+          await fetch(`https://dev.to/${encodeURIComponent(me.username)}`, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Postiz)' },
           })
-        ).json();
+        ).text();
+        const card = html.split('spec-org-titles')[1]?.split('</div>')[0] || '';
+        for (const match of card.matchAll(/href="\/([A-Za-z0-9_-]+)"/g)) {
+          candidates.add(match[1]);
+        }
+      } catch (err) {
+        /* profile page is a best-effort source */
+      }
+    }
+
+    for (const org of (process.env.DEVTO_ORGANIZATIONS || '').split(',')) {
+      if (org.trim()) {
+        candidates.add(org.trim());
+      }
+    }
+
+    const fullDetails = await Promise.all(
+      [...candidates].map(async (org: string) => {
+        const details = await safeJson(
+          `https://dev.to/api/organizations/${encodeURIComponent(org)}`
+        );
+        if (!details?.id) {
+          return null;
+        }
+        if (me?.id) {
+          const members = await safeJson(
+            `https://dev.to/api/organizations/${encodeURIComponent(
+              org
+            )}/users?per_page=1000`
+          );
+          if (
+            Array.isArray(members) &&
+            !members.some((m: any) => m?.id === me.id)
+          ) {
+            return null;
+          }
+        }
+        return details;
       })
     );
 
-    return fullDetails.map((org: any) => ({
-      id: org.id,
-      name: org.name,
-      username: org.username,
-    }));
+    return fullDetails
+      .filter((org: any) => org)
+      .map((org: any) => ({
+        id: org.id,
+        name: org.name,
+        username: org.username,
+      }));
   }
 
   async post(
