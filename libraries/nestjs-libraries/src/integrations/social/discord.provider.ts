@@ -109,12 +109,21 @@ export class DiscordProvider extends SocialAbstract implements SocialProvider {
 
     return {
       id: guild.id,
-      name: application.name,
+      // One bot serves many servers: name/username come from the server so each
+      // connected guild is a distinct, recognisable channel (was the bot's name for all).
+      name: guild?.name || application.name,
       accessToken: access_token,
       refreshToken: refresh_token,
       expiresIn: expires_in,
-      picture: `https://cdn.discordapp.com/avatars/${application.bot.id}/${application.bot.avatar}.png`,
-      username: application.bot.username,
+      picture: guild?.icon
+        ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`
+        : `https://cdn.discordapp.com/avatars/${application.bot.id}/${application.bot.avatar}.png`,
+      username:
+        (guild?.name || '')
+          .toLowerCase()
+          .normalize('NFKD')
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-+|-+$/g, '') || String(guild.id),
     };
   }
 
